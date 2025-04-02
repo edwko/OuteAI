@@ -2,11 +2,10 @@ import base64
 import requests
 from dataclasses import dataclass
 from loguru import logger
-from typing import Generator
 import json
 from tqdm import tqdm
 
-API_URL = "https://outeai.com/api/v1/tts-stream" 
+API_URL = "https://outeai.com/api/v1/tts" 
 
 @dataclass
 class AudioOutput:
@@ -16,11 +15,10 @@ class AudioOutput:
     
     def save(self, path: str) -> None:
         with open(path, "wb") as wav_file:
-            if not path.endswith(".wav"):
-                path += ".wav"
+            if not path.endswith(".flac"):
+                path += ".flac"
             wav_file.write(self.audio_bytes)
             logger.info(f"File saved in: {path}")
-
 
 class TTSClient:
     """Client for interacting with the OuteTTS API."""
@@ -37,20 +35,15 @@ class TTSClient:
     def generate(
         self,
         text: str,
-        model_id: str,
-        temperature: float = 0.1,
-        repeat_penalty: float = 1.1,
-        speaker: str = "en_male_1",
-        show_notice: bool = True
-    ) -> Generator[dict, None, None]:
+        temperature: float = 0.4,
+        speaker: dict = {"default": "EN-FEMALE-1-NEUTRAL"}
+    ):
         """Generate speech from text with streaming.
         
         Args:
             text: Text to convert to speech
-            model_id: ID of the model to use
-            temperature: Generation temperature (default: 0.1)
-            repeat_penalty: Penalty for repetition (default: 1.1)
-            speaker: Speaker ID (default: "en_male_1")
+            temperature: Generation temperature (default: 0.4)
+            speaker: Speaker ID (default: {"default": "EN-FEMALE-1-NEUTRAL"})
         
         Yields:
             A dictionary containing partial generation data from the API
@@ -63,50 +56,47 @@ class TTSClient:
 
         if not text:
             raise ValueError("The 'text' parameter is required and cannot be empty.")
-        if not model_id:
-            raise ValueError("The 'model_id' parameter is required and cannot be empty.")
         if not speaker:
             raise ValueError("The 'speaker' parameter is required and cannot be empty.")
         if not (0.1 <= temperature <= 1.0):
             raise ValueError("The 'temperature' parameter must be between 0.1 and 1.0.")
-        if not (1.0 <= repeat_penalty <= 2.0):
-            raise ValueError("The 'repeat_penalty' parameter must be between 1.0 and 2.0.")
         
         payload = {
             "token": self.token,
             "text": text,
-            "model_id": model_id.lower().strip(),
             "temperature": temperature,
-            "repeat_penalty": repeat_penalty,
-            "speaker": speaker.lower().strip()
+            "speaker": speaker
         }
 
         audio_bytes = None
         
         try:
-            MAX_PER_TEXT = 250
-            if len(text) > MAX_PER_TEXT:
-                logger.warning(f"Text exceeds the maximum length of {len(text)}/{MAX_PER_TEXT} characters and will be truncated automatically by the API.")
-
-            if show_notice:
-                logger.warning("Early access: Certain limitations and usage caps are in place.\n"
-                               "Dynamic resource allocation includes inactivity timeout, after which resources may require reinitialization (cold start) when accessed again.\n"
-                               "To disable this notice, pass 'show_notice=False' in the 'generate' function.")
-
             with self.session.post(API_URL, json=payload, stream=True) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except requests.HTTPError as e:
+                    error_message = response.json().get("message", "Unknown error")
+                    logger.error(f"API request failed: {error_message}")
+                    raise ValueError(f"API request failed: {e}")
+
                 gen = tqdm(response.iter_lines(decode_unicode=True))
                 for line in gen:
                     if line.strip():
                         try:
                             chunk = line.strip()
                             data = json.loads(chunk)
-
-                            if data.get("data", {}).get("request_finished", False):
+                            if data.get("data", {}):
                                 audio_bytes = data.get("data", {}).get("audio_bytes", None)
                             else:
-                                gen.set_postfix({"generated_tokens": data.get("data", {}).get("generated_tokens", 0)})
+                                status = {
+                                    "status": data.get("generation_status", "unknown"), 
+                                }
+                                if 'text_chunks' in data:
+                                    status['chunks'] = f"{data['current_text_chunk']}/{data['text_chunks']}"
+                                if 'generated_seconds' in data:
+                                    status['generated_seconds'] = f"{data['generated_seconds']:.2f}s"
 
+                                gen.set_postfix(status)
                         except ValueError as e:
                             logger.error(f"Failed to parse chunk: {e}")
                             continue
