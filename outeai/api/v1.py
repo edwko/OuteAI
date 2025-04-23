@@ -3,7 +3,6 @@ import requests
 from dataclasses import dataclass
 from loguru import logger
 import json
-from tqdm import tqdm
 
 API_URL = "https://outeai.com/api/v1/tts" 
 
@@ -36,7 +35,8 @@ class TTSClient:
         self,
         text: str,
         temperature: float = 0.4,
-        speaker: dict = {"default": "EN-FEMALE-1-NEUTRAL"}
+        speaker: dict = {"default": "EN-FEMALE-1-NEUTRAL"},
+        verbose: bool = True,
     ):
         """Generate speech from text with streaming.
         
@@ -78,9 +78,10 @@ class TTSClient:
                     error_message = response.json().get("message", "Unknown error")
                     logger.error(f"API request failed: {error_message}")
                     raise ValueError(f"API request failed: {e}")
+                
+                logger.info("Generating audio...")
 
-                gen = tqdm(response.iter_lines(decode_unicode=True))
-                for line in gen:
+                for line in response.iter_lines(decode_unicode=True):
                     if line.strip():
                         try:
                             chunk = line.strip()
@@ -91,13 +92,13 @@ class TTSClient:
                                 status = {
                                     "status": data.get("generation_status", "unknown"), 
                                 }
-                                if 'text_chunks' in data:
-                                    status['chunks'] = f"{data['current_text_chunk']}/{data['text_chunks']}"
                                 if 'generated_seconds' in data:
                                     status['generated_seconds'] = f"{data['generated_seconds']:.2f}s"
 
-                                gen.set_postfix(status)
-                        except ValueError as e:
+                                if verbose:
+                                    logger.info(status)
+
+                        except Exception as e:
                             logger.error(f"Failed to parse chunk: {e}")
                             continue
         except requests.RequestException as e:
@@ -108,3 +109,4 @@ class TTSClient:
             audio_bytes = base64.b64decode(audio_bytes)
 
         return AudioOutput(audio_bytes)
+        
